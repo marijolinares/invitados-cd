@@ -1,0 +1,236 @@
+# Pipeline de liberación y despliegue continuo
+#
+#   push/PR ──► 1. Integración ──► 2. Construcción ──► 3. Liberación (staging) ──► 4. Producción
+#               lint, audit,       imagen Docker       entorno efímero con          aprobación manual
+#               unitarias          versionada + GHCR   Docker Compose, smoke,       + Render + release
+#                                                      casos de prueba, monitoreo
+#
+# Configuración necesaria en GitHub (ver README):
+#   Settings > Environments > staging     (sin reglas; secreto opcional STAGING_ADMIN_PASSWORD)
+#   Settings > Environments > production  (Required reviewers; secreto RENDER_DEPLOY_HOOK_URL; variable PROD_URL)
+
+name: Pipeline CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Nunca dos despliegues a la vez sobre la misma rama
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  IMAGEN_LOCAL: invitados-cd
+
+jobs:
+  # ---------------------------------------------------------------------------
+  integracion:
+    name: 1. Integración
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Obtener código
+        uses: actions/checkout@v4
+
+      - name: Instalar Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependencias (exactas del lockfile)
+        run: npm ci
+
+      - name: Análisis estático
+        run: npm run lint
+
+      - name: Auditoría de dependencias (bloquea vulnerabilidades altas)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Pruebas unitarias
+        run: |
+          mkdir -p reportes
+          node --test \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=reportes/unitarias.xml \
+            "test/unit/*.test.js"
+
+      - name: Pruebas de aceptación en memoria
+        run: npm run test:aceptacion
+
+      - name: Guardar reportes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes-integracion
+          path: reportes/
+
+  # ---------------------------------------------------------------------------
+  construccion:
+    name: 2. Construcción de la imagen
+    needs: integracion
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      imagen: ${{ steps.vars.outputs.imagen }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Calcular versión y nombre de imagen
+        id: vars
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          REPO="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "imagen=ghcr.io/$REPO:$VERSION" >> "$GITHUB_OUTPUT"
+          echo "repo=ghcr.io/$REPO" >> "$GITHUB_OUTPUT"
+          echo "Versión: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Construir imagen
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ steps.vars.outputs.version }} \
+            --build-arg GIT_SHA=${{ github.sha }} \
+            -t $IMAGEN_LOCAL:${{ steps.vars.outputs.version }} \
+            -t ${{ steps.vars.outputs.imagen }} \
+            -t ${{ steps.vars.outputs.repo }}:latest \
+            .
+          docker image ls $IMAGEN_LOCAL
+
+      - name: Exportar imagen para el entorno de liberación
+        run: docker save $IMAGEN_LOCAL:${{ steps.vars.outputs.version }} | gzip > imagen.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imagen
+          path: imagen.tar.gz
+          retention-days: 3
+
+      - name: Publicar en GitHub Container Registry (solo main)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push ${{ steps.vars.outputs.imagen }}
+          docker push ${{ steps.vars.outputs.repo }}:latest
+          echo "Imagen publicada: \`${{ steps.vars.outputs.imagen }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  liberacion:
+    name: 3. Liberación (staging)
+    needs: construccion
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: staging
+    env:
+      VERSION: ${{ needs.construccion.outputs.version }}
+      ADMIN_PASSWORD: ${{ secrets.STAGING_ADMIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cargar la imagen construida
+        uses: actions/download-artifact@v4
+        with:
+          name: imagen
+
+      - run: gunzip -c imagen.tar.gz | docker load
+
+      - name: Generar entorno de liberación (app + Prometheus)
+        run: |
+          chmod +x scripts/*.sh scripts/*/*.sh
+          scripts/entorno/crear-entorno.sh staging "$IMAGEN_LOCAL:$VERSION" --monitoreo
+
+      - name: Smoke tests
+        run: scripts/pruebas/smoke-test.sh http://localhost:8081 "$VERSION"
+
+      - name: Casos de prueba de aceptación (CP-01 a CP-06)
+        run: scripts/pruebas/pruebas-aceptacion.sh staging "$VERSION"
+
+      - name: Verificar monitoreo
+        run: scripts/pruebas/verificar-monitoreo.sh staging
+
+      - name: Probar despliegue con rollback (redespliegue de la misma versión)
+        run: scripts/despliegue/desplegar.sh staging "$IMAGEN_LOCAL:$VERSION" "$VERSION"
+
+      - name: Logs del entorno
+        if: always()
+        run: |
+          mkdir -p reportes
+          source scripts/lib.sh
+          compose staging --profile monitoreo logs --no-color --tail=200 > reportes/logs-staging.txt 2>&1 || true
+
+      - name: Destruir entorno efímero
+        if: always()
+        run: scripts/entorno/destruir-entorno.sh staging --borrar-datos
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reportes-liberacion
+          path: reportes/
+
+  # ---------------------------------------------------------------------------
+  produccion:
+    name: 4. Despliegue a producción
+    needs: [construccion, liberacion]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    environment:
+      name: production
+      url: ${{ vars.PROD_URL }}
+    env:
+      VERSION: ${{ needs.construccion.outputs.version }}
+      IMAGEN: ${{ needs.construccion.outputs.imagen }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      PROD_URL: ${{ vars.PROD_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revisar configuración del entorno de producción
+        id: config
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ] || [ -z "$PROD_URL" ]; then
+            echo "::warning::Falta RENDER_DEPLOY_HOOK_URL o PROD_URL en el entorno production. Se omite el despliegue."
+            echo "listo=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "listo=si" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Desplegar en Render y verificar
+        if: steps.config.outputs.listo == 'si'
+        env:
+          LATENCIA_MAX: "1.5"
+        run: |
+          chmod +x scripts/*.sh scripts/*/*.sh
+          scripts/despliegue/desplegar-render.sh
+
+      - name: Publicar release v${{ env.VERSION }}
+        if: steps.config.outputs.listo == 'si'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v$VERSION" \
+            --target "${{ github.sha }}" \
+            --title "v$VERSION" \
+            --generate-notes \
+            --notes "Imagen desplegada: \`$IMAGEN\` en $PROD_URL"
+          echo "Producción: $PROD_URL corre v$VERSION" >> "$GITHUB_STEP_SUMMARY"

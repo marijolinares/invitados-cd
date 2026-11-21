@@ -1,0 +1,65 @@
+# Definición única del entorno. Se parametriza con un archivo .env por entorno:
+#   deploy/.env.staging     -> entorno de liberación (pruebas)
+#   deploy/.env.production  -> entorno de producción
+# Así staging y producción son idénticos salvo la configuración (paridad de entornos).
+#
+# Uso:
+#   docker compose -p invitados-staging --env-file deploy/.env.staging -f deploy/docker-compose.yml up -d
+#   (agregar --profile monitoreo para levantar también Prometheus)
+
+name: ${COMPOSE_PROJECT_NAME:-invitados}
+
+services:
+  app:
+    image: ${IMAGE:-invitados-cd:local}
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-staging}
+      PORT: 3000
+      DATA_DIR: /data
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Define ADMIN_PASSWORD en el archivo .env del entorno}
+      SESSION_MINUTES: ${SESSION_MINUTES:-60}
+      IMAGE_MAX_BYTES: ${IMAGE_MAX_BYTES:-2097152}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${HOST_PORT:-8080}:3000"
+    volumes:
+      - datos:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT:-0.50}"
+          memory: ${MEM_LIMIT:-256M}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["monitoreo"]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PROM_RETENCION:-15d}
+    ports:
+      - "${PROM_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alertas.yml:/etc/prometheus/alertas.yml:ro
+      - prometheus-datos:/prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  datos:
+  prometheus-datos:

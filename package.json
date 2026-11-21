@@ -1,0 +1,24 @@
+{
+  "name": "invitados-cd",
+  "version": "1.0.0",
+  "description": "Caso de estudio: sistema de registro de invitados a eventos con liberación y despliegue continuo",
+  "main": "src/server.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "lint": "node scripts/pruebas/lint.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "test:unit": "node --test \"test/unit/*.test.js\"",
+    "test:aceptacion": "node --test \"test/aceptacion/*.test.js\""
+  },
+  "author": "Maria Jose Linares Cortes",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.22.3",
+    "multer": "^2.5.0"
+  }
+}

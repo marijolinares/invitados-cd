@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Invitados — Congreso de Tecnología UTT</title>
+    <link rel="stylesheet" href="/estilos.css" />
+  </head>
+  <body>
+    <header class="barra">
+      <strong>Congreso de Tecnología UTT · Invitados</strong>
+      <span id="version" class="version"></span>
+    </header>
+
+    <!-- Pantalla: LoginPage -->
+    <main id="pantalla-login" class="pantalla">
+      <form id="form-login" class="tarjeta" autocomplete="off">
+        <h1>Iniciar sesión</h1>
+        <label>Usuario <input id="login-usuario" name="usuario" required /></label>
+        <label>Contraseña <input id="login-password" name="password" type="password" required /></label>
+        <button id="btn-entrar" type="submit">Entrar</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </main>
+
+    <!-- Pantalla: Panel de administración con menú lateral -->
+    <div id="pantalla-panel" class="pantalla panel" hidden>
+      <nav class="menu-lateral" aria-label="Menú lateral">
+        <button id="tab-nuevo" class="tab activa" data-seccion="seccion-nuevo">Nuevo invitado</button>
+        <button id="tab-lista" class="tab" data-seccion="seccion-lista">Invitados</button>
+        <button id="btn-salir" class="tab salir">Cerrar sesión</button>
+      </nav>
+
+      <section id="seccion-nuevo" class="seccion">
+        <h2>Nuevo invitado</h2>
+        <form id="form-invitado" class="tarjeta" novalidate>
+          <label>Nombre <input id="campo-nombre" name="nombre" maxlength="50" /></label>
+          <small id="error-nombre" class="error"></small>
+          <label>Apellidos <input id="campo-apellidos" name="apellidos" maxlength="80" /></label>
+          <small id="error-apellidos" class="error"></small>
+          <label>Biografía <textarea id="campo-biografia" name="biografia" maxlength="500" rows="4"></textarea></label>
+          <small id="error-biografia" class="error"></small>
+          <label>Imagen (jpg o png, máx. 2 MB)
+            <input id="campo-imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" />
+          </label>
+          <small id="error-imagen" class="error"></small>
+          <button id="btn-agregar" type="submit">Agregar</button>
+          <p id="mensaje" role="status"></p>
+        </form>
+      </section>
+
+      <section id="seccion-lista" class="seccion" hidden>
+        <h2>Invitados</h2>
+        <p id="lista-vacia">Aún no hay invitados registrados.</p>
+        <ul id="lista-invitados" class="lista"></ul>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

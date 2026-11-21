@@ -1,0 +1,46 @@
+# Reglas de alerta alineadas con los niveles de servicio (SLA/SLO) del documento.
+groups:
+  - name: niveles-de-servicio
+    rules:
+      # SLO de disponibilidad: 99.5 % mensual. Alerta si la app no responde 2 minutos.
+      - alert: AppCaida
+        expr: up{job="invitados-app"} == 0
+        for: 2m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "La aplicación no responde a Prometheus"
+
+      # SLO de errores: menos de 1 % de respuestas 5xx en 5 minutos.
+      - alert: TasaErrores5xxAlta
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total[5m])), 0.001) > 0.01
+        for: 5m
+        labels: { severidad: critica }
+        annotations:
+          resumen: "Más del 1 % de las peticiones terminan en error 5xx"
+
+      # SLO de latencia: p95 por debajo de 500 ms.
+      - alert: LatenciaP95Alta
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{route!="/metrics"}[5m]))) > 0.5
+        for: 10m
+        labels: { severidad: advertencia }
+        annotations:
+          resumen: "El percentil 95 de latencia supera 500 ms"
+
+      # Seguridad: posible fuerza bruta sobre el login.
+      - alert: LoginsFallidosAltos
+        expr: increase(auth_login_fallidos_total[5m]) > 20
+        labels: { severidad: advertencia }
+        annotations:
+          resumen: "Más de 20 inicios de sesión fallidos en 5 minutos"
+
+      # Memoria: el contenedor tiene límite de 256 MB.
+      - alert: MemoriaAlta
+        expr: process_resident_memory_bytes > 200 * 1024 * 1024
+        for: 10m
+        labels: { severidad: advertencia }
+        annotations:
+          resumen: "La app usa más de 200 MB de memoria (límite 256 MB)"

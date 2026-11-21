@@ -1,0 +1,10 @@
+node_modules/
+data/
+.env
+.env.*
+!*.example
+deploy/.env.staging
+deploy/.env.production
+reportes/
+*.log
+deploy/.historial-*
